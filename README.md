@@ -48,6 +48,26 @@ node tools/pwa-check.mjs <站台目錄> --json
 
 `ignore` 列的 HTML 不當入口頁看待（產圖用的卡片、內部工具頁這類）。
 
+
+## selfhost-font.py
+
+把 Google Fonts 換成自架 woff2（外觀不變），只切這個站真的用得到的字。
+
+```bash
+# 靜態 UI 文字：只切 repo 裡出現過的字（通常 20–170KB）
+python3 tools/selfhost-font.py --family "Noto Sans TC" --weights 400,700 \
+    --out assets/fonts --url-prefix "assets/fonts/" --chars-from index.html app.js
+
+# 會顯示使用者輸入 / AI 產生文字的字重：加 BIG5 常用字 5,401（約 800KB–1MB）
+python3 tools/selfhost-font.py --family "Noto Sans TC" --weights 900 \
+    --out assets/fonts --url-prefix "assets/fonts/" --chars-from index.html --common
+```
+
+woff2 產到 `--out`，對應的 `@font-face` CSS 印到 stdout，自己貼進頁面並刪掉 Google 的 link。
+常用字表用 Python 內建的 big5 codec 反解，不需要外部字表。
+
+需要 `pyftsubset`（`pip install "fonttools[woff]" brotli`）。
+
 ## 安裝
 
 ```bash

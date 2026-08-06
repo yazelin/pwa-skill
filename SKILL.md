@@ -76,6 +76,10 @@ Pages 對每個檔都回 `Vary: Accept-Encoding`。暖快取用 `fetch()` 存進
 
 ## 字型
 
+- 換自架的做法:`tools/selfhost-font.py`(下載 TTF → pyftsubset → woff2 + @font-face)。
+  **切多少字看那個字重服務誰**:靜態 UI 文字切 repo 出現過的字就好;
+  使用者輸入、AI 產生、每天長大的資料會用到的字重,要切 BIG5 常用字 5,401(約 800KB–1MB)。
+  切太省的後果不是壞掉,是**部分字掉到系統字型**——同一行字兩種臉,比全用系統字型還難看。
 - **別用 Google Fonts CDN**:跨域 → SW 不能快取 → 每次連外網 + 離線壞。**自架 woff2**
   (用 `pyftsubset` 只 subset repo 出現過的字)。
 - 大 CJK 字型切兩份、同 family 用 `unicode-range`:**UI 子集 preload**(小)+ 完整檔不 preload。
