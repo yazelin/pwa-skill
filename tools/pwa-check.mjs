@@ -67,6 +67,8 @@ const htmlFiles = FILES.filter((f) => extname(f) === '.html' && !IGNORE.has(rel(
 const SW_PATH = join(ROOT, 'sw.js');
 
 console.log(`pwa-check — ${ROOT}`);
+// dist/ 是 build 產物:沒重新 build 就測,測到的是上一版,結論會是假的(踩過一次)
+if (/\/(dist|build|out)$/.test(ROOT)) warn('測的是 build 產物', `${ROOT} —— 先跑一次 build,否則測到的是舊版`);
 if (!existsSync(SW_PATH)) { fail('sw.js 存在', '找不到 sw.js,這站沒有 service worker'); report(); process.exit(1); }
 const swSrc = readFileSync(SW_PATH, 'utf8');
 
