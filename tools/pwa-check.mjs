@@ -147,11 +147,25 @@ else {
 }
 
 // ---------- 4. 有媒體就必須 ignoreVary(Pages 的 Vary: Accept-Encoding) ----------
+// Vary 比對比的是「存進去時的 request」與「查詢用的 request」的 header。
+// 兩邊都用 URL 字串當鍵 → 兩邊都沒有 Accept-Encoding → 比對成立,不需要 ignoreVary
+// (mandarin-taigi/hakka 實測 plain match 命中)。只要有一邊傳的是真的 Request
+// (帶著 <audio> 的 Accept-Encoding: identity),沒 ignoreVary 就會 miss。
 if (mediaFiles.length) {
-  const matches = swSrc.match(/\.match\s*\(/g) || [];
-  if (matches.length && !/ignoreVary/.test(swSrc)) {
-    fail('cache.match 加 ignoreVary', `站內有 ${mediaFiles.length} 個媒體檔;Pages 回 Vary: Accept-Encoding,而 <audio> 送 identity,不加 ignoreVary 會整個 miss → 斷網 Format error`);
-  } else if (matches.length) pass('cache.match ignoreVary', `站內 ${mediaFiles.length} 個媒體檔`);
+  const calls = [...swSrc.matchAll(/\.(match|put)\s*\(\s*([^,)\s]+)/g)];
+  const isStringKey = (a) => /^["'`]/.test(a) || /\.url$|\.href$/.test(a) || /^(u|url|href|path|p)$/.test(a);
+  const isRequestKey = (a) => /^(req|request|r)$/.test(a) || /^(e|event)\.request$/.test(a);
+  const reqKeyed = calls.filter((c) => isRequestKey(c[2]));
+  const unknown = calls.filter((c) => !isStringKey(c[2]) && !isRequestKey(c[2]));
+  if (!calls.length) { /* 沒碰快取 API */ }
+  else if (/ignoreVary/.test(swSrc)) pass('cache.match ignoreVary', `站內 ${mediaFiles.length} 個媒體檔`);
+  else if (reqKeyed.length || unknown.length) {
+    // 靜態只能看到「有沒有寫 ignoreVary」,看不出這個 match 服務的是不是媒體路徑
+    // (泛用 helper 如 matchBestEffort(cacheName, request) 兩種鍵都會經過它)。
+    // 所以這裡只出聲,真正的判定交給執行期那條:線上播一次 → 用預設比對回查快取。
+    const sig = (l) => l.slice(0, 4).map((c) => `.${c[1]}(${c[2]})`).join(' ');
+    warn('沒有 ignoreVary', `${sig([...reqKeyed, ...unknown])};媒體若走 Request 當鍵的路徑就會踩 Vary miss —— 執行期檢查會實測`);
+  } else pass('快取以 URL 字串為鍵', `${mediaFiles.length} 個媒體檔;兩端都不帶 header,Vary 比對不成立,毋須 ignoreVary`);
   if (!/content-range/i.test(swSrc)) {
     warn('Range 請求合成 206', '從快取回 200 但沒有 Content-Range,Chrome 對較大的音檔會判 Format error');
   }
@@ -273,33 +287,52 @@ async function runtime() {
     if (offlineOK && bodyLen > 0) pass('斷網後首頁開得起來', `${bodyLen} 字內容`);
     else fail('斷網後首頁開得起來', '離線導覽 fallback 沒接上');
 
-    // 5-4 媒體:命中快取 ≠ 播得出來。挑站內最大的一個媒體檔真的去 decode。
+    await ctx.setOffline(false);
+
+    // 5-4 媒體:先線上用 <audio> 播一次(跟真實使用者同一種請求形狀),再用**預設比對**
+    // 回查快取。plain miss 但 ignoreVary 命中 = 踩到 Vary 坑,斷網就會 Format error。
+    //
+    // 【這條的負控制沒有重現,2026-08-07】把 gewu 的 ignoreVary 拿掉後,預設比對照樣命中、
+    // 斷網照樣播得出來。合理的解釋是 Accept-Encoding 屬 forbidden header,由網路層在送出
+    // 時才加,Cache API 比 Vary 時兩邊的 Request 物件都沒有這個欄位 → 永遠相等。
+    // 所以:這條檢查真的紅時是真問題,但它綠不代表安全 —— 別把它當保證。
+    // 斷網解碼那條(下面)才是有鑑別力的那個。
     if (mediaFiles.length) {
       const biggest = mediaFiles.sort((a, b) => statSync(b).size - statSync(a).size)[0];
       const url = rel(biggest).split('/').map(encodeURIComponent).join('/');
-      const inCache = await page.evaluate(async (u) => {
+      const decode = (u) => page.evaluate(async (v) => {
+        const el = document.createElement(/\.(mp4|webm|mov)$/i.test(v) ? 'video' : 'audio');
+        el.volume = 0; el.preload = 'auto'; el.src = v;
+        const r = await new Promise((res) => {
+          el.addEventListener('loadedmetadata', () => res('OK'));
+          el.addEventListener('error', () => res('FAIL:' + (el.error && el.error.code)));
+          setTimeout(() => res('TIMEOUT'), 15000);
+        });
+        el.removeAttribute('src'); el.load(); return r;
+      }, u);
+      await decode(url);
+      await page.waitForTimeout(12000);   // 206 的話 SW 要另抓整檔補存,給它時間
+      const keys = await page.evaluate(async (u) => {
+        const out = { plain: false, lax: false };
         for (const n of await caches.keys()) {
-          if (await (await caches.open(n)).match(u, { ignoreSearch: true, ignoreVary: true })) return true;
+          const c = await caches.open(n);
+          if (await c.match(u)) out.plain = true;
+          if (await c.match(u, { ignoreSearch: true, ignoreVary: true })) out.lax = true;
         }
-        return false;
+        return out;
       }, url);
-      if (!inCache) info('斷網媒體解碼', `${rel(biggest)} 不在快取裡(可能是刻意延後暖載),跳過`);
-      else {
-        const verdict = await page.evaluate(async (u) => {
-          const el = document.createElement(/\.(mp4|webm|mov)$/i.test(u) ? 'video' : 'audio');
-          el.volume = 0; el.preload = 'auto'; el.src = u;
-          const v = await new Promise((res) => {
-            el.addEventListener('loadedmetadata', () => res('OK'));
-            el.addEventListener('error', () => res('FAIL:' + (el.error && el.error.code)));
-            setTimeout(() => res('TIMEOUT'), 12000);
-          });
-          el.removeAttribute('src'); el.load(); return v;
-        }, url);
+      if (!keys.lax) info('媒體離線', `${rel(biggest)} 沒進快取(可能是刻意讓使用者自己按下載),跳過`);
+      else if (!keys.plain) {
+        fail('媒體的 Vary 比對', `${rel(biggest)} 在快取裡,但預設比對 miss、只有 ignoreVary 才命中 —— 斷網會 Format error`);
+      } else {
+        pass('媒體的 Vary 比對', `${rel(biggest)} 預設比對就命中`);
+        await ctx.setOffline(true);
+        const verdict = await decode(url);
         if (verdict === 'OK') pass('斷網媒體真的能解碼', rel(biggest));
         else fail('斷網媒體真的能解碼', `${rel(biggest)} → ${verdict}(命中快取不等於播得出來)`);
+        await ctx.setOffline(false);
       }
     }
-    await ctx.setOffline(false);
   } finally {
     await browser.close().catch(() => {});
     srv.close();

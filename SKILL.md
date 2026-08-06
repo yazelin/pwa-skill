@@ -54,6 +54,11 @@ Pages 對每個檔都回 `Vary: Accept-Encoding`。暖快取用 `fetch()` 存進
 - 症狀極具誤導性:**快取裡的位元組完全正確**,「命中快取」「fetch 回 200」這類檢查全部照過,
   小檔(約 144KB)還會過、大檔(≥464KB)全掛,看起來像「只有某幾首沒聲」。
 - 正解:資產以 URL 為鍵,一律 `{ ignoreSearch: true, ignoreVary: true }`。
+- **但 `ignoreVary` 到底有沒有在治這個症狀,存疑(2026-08-07 實測)**:把 gewu 的 `ignoreVary`
+  拿掉後,預設比對照樣命中、斷網照樣播得出來,負控制**沒有重現**。合理解釋是 `Accept-Encoding`
+  屬 forbidden header、由網路層送出時才加,Cache API 比 Vary 時兩邊 Request 物件都沒有這欄位。
+  當初 gewu 是線上真實觀察到的症狀,同一批還加了 206 合成 —— **真正治好的可能是 206 那條**。
+  結論:`ignoreVary` 照加(無害、成本零),但別把它當保證;會不會播,只有真的 decode 過才知道。
 - 從快取回應帶 `Range` 的請求要**自己合成 206**(補 `Content-Range`/`Content-Length`);
   回「200 但沒有 Content-Range」有些情境會被媒體端拒收。
 - 導覽 fallback 也要 `ignoreSearch`,否則 `preview.html?city=x` 這種帶 query 的路由
