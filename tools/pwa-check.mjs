@@ -19,6 +19,7 @@
 import { readFileSync, existsSync, statSync, readdirSync, cpSync, mkdtempSync, writeFileSync, appendFileSync, rmSync } from 'fs';
 import { join, extname, dirname, relative, resolve } from 'path';
 import { tmpdir } from 'os';
+import { execFileSync } from 'child_process';
 import http from 'http';
 
 const argv = process.argv.slice(2);
@@ -183,8 +184,56 @@ for (const f of htmlFiles) {
 }
 
 // ---------- 執行期檢查 ----------
+// ---------- 6. 改了被快取的檔卻沒 bump 版號 ----------
+// 手動 bump 的 repo(AGENTS.md 寫「改到被快取的檔就把版號 +1」)遲早會忘。
+// 忘記的後果分兩級,這裡分開報:
+//   sw.js 位元組沒變 → 瀏覽器根本不知道有新版,使用者永遠停在舊的(硬傷)
+//   sw.js 變了但快取名沒變 → 新 SW 會裝,但 cache-first 的資源仍回舊快取裡那份
+gitBumpCheck();
+function gitBumpCheck() {
+  const raw = (...a) => execFileSync('git', ['-C', ROOT, ...a], { encoding: 'utf8' });
+  const git = (...a) => raw(...a).trim();   // 注意:比對檔案內容要用 raw,trim 會吃掉尾端換行 → 永遠判定「有改」
+  let repoRoot, base;
+  try { repoRoot = git('rev-parse', '--show-toplevel'); } catch { return info('版號 bump 檢查', '不是 git repo,跳過'); }
+  try { base = opt('--base', git('rev-parse', '--abbrev-ref', 'origin/HEAD')); } catch { base = opt('--base', 'HEAD'); }
+  let changed, swAtBase;
+  try {
+    changed = new Set([
+      ...git('diff', '--name-only', base, '--').split('\n'),
+      ...git('ls-files', '--others', '--exclude-standard').split('\n'),
+    ].filter(Boolean));
+    swAtBase = raw('show', `${base}:${relative(repoRoot, SW_PATH)}`);
+  } catch {
+    let ignored = false;
+    try { execFileSync('git', ['-C', ROOT, 'check-ignore', '-q', SW_PATH]); ignored = true; } catch { /* 沒被忽略 */ }
+    return info('版號 bump 檢查', ignored
+      ? `${relative(repoRoot, SW_PATH)} 是 build 產物(gitignored),版號要對源頭那份跑`
+      : `拿不到基準 ${base} 的內容,跳過`);
+  }
+  if (!changed.size) return pass('版號 bump 檢查', `與 ${base} 相同,沒有待部署的改動`);
+
+  // 被快取的檔 = SW 原始碼裡寫死的那份清單(同覆蓋率檢查用的來源)
+  const cachedRepoPaths = new Set(precacheList().map((u) => relative(repoRoot, join(ROOT, u.replace(/^\.?\//, '')))));
+  const touched = [...changed].filter((f) => cachedRepoPaths.has(f));
+  if (!touched.length) return pass('版號 bump 檢查', `改動沒碰到被快取的檔(對照 ${base})`);
+
+  const names = (src) => (src.match(/["'`][\w.-]*(?:v\d+|[0-9a-f]{6,})[\w.-]*["'`]/g) || []).join('|');
+  const swChanged = readFileSync(SW_PATH, 'utf8') !== swAtBase;
+  const list = touched.slice(0, 5).join(' ') + (touched.length > 5 ? ` …共 ${touched.length}` : '');
+  if (!swChanged) fail('版號沒 bump', `${list} 改了,但 sw.js 一個位元組都沒動 → 瀏覽器不會知道有新版,使用者停在舊版`);
+  else if (names(readFileSync(SW_PATH, 'utf8')) === names(swAtBase)) {
+    warn('快取名沒變', `${list} 改了,sw.js 也改了,但快取名一樣 → 新 SW 會裝,但 cache-first 的資源仍吃舊快取那份`);
+  } else pass('版號 bump 檢查', `${touched.length} 個被快取的檔有改動,快取名也跟著變了`);
+}
+
 if (!flag('--static-only')) await runtime();
 report();
+
+// SW 原始碼裡寫死的資源清單(站台根目錄相對路徑),且該檔真的存在
+function precacheList() {
+  return [...new Set((swSrc.match(/["'](\.{0,2}\/?[\w\-./]+\.(?:html|css|js|json|webp|png|jpg|jpeg|svg|woff2|mp3|ogg|m4a|wav|mp4|ico))["']/g) || [])
+    .map((s) => s.slice(1, -1)))].filter((u) => existsSync(join(ROOT, u.replace(/^\.?\//, ''))));
+}
 
 async function runtime() {
   let chromium;
@@ -245,8 +294,7 @@ async function runtime() {
 
     // 5-1 快取覆蓋率:拿 sw.js 裡寫死的資源清單,逐項回頭問快取「真的在嗎」
     // fetch 成功 ≠ cache.put 成功(配額不足、SW 被回收時 put 會靜默失敗),所以只認實查。
-    const wanted = [...new Set((swSrc.match(/["'](\.{0,2}\/?[\w\-./]+\.(?:html|css|js|json|webp|png|jpg|jpeg|svg|woff2|mp3|ogg|m4a|wav|mp4|ico))["']/g) || [])
-      .map((s) => s.slice(1, -1)))].filter((u) => existsSync(join(ROOT, u.replace(/^\.?\//, ''))));
+    const wanted = precacheList();
     if (wanted.length) {
       const missing = await page.evaluate(async (list) => {
         const names = await caches.keys();

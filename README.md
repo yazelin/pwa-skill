@@ -23,6 +23,9 @@ node tools/pwa-check.mjs <站台目錄> --json
 - `activate` 清快取有前綴保護（沒有的話會刪掉同 origin 其他站的離線包）
 - 站內有媒體檔時，SW 的 `cache.match` 有 `ignoreVary`、有合成 206
 - 沒有把字型掛在 Google Fonts CDN 上
+- **改了被快取的檔卻沒 bump 版號**（對照 `origin/HEAD`，可用 `--base` 換基準）：
+  `sw.js` 一個位元組都沒動 = 瀏覽器不知道有新版 → FAIL；`sw.js` 變了但快取名沒變 =
+  cache-first 的資源仍回舊快取那份 → WARN
 
 **執行期檢查**（Playwright + 仿 GitHub Pages headers 的本機 server）
 

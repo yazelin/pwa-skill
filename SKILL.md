@@ -39,6 +39,9 @@ node ~/pwa-skill/tools/pwa-check.mjs <站台目錄> --static-only    # 不需要
   改成分層的那一版要**一次性接手舊快取**的資產,否則修好的那次反而讓既有使用者再付一次全量。
 - 路由策略:**HTML network-first**(線上拿最新、離線吃快取)、**hashed 資源 cache-first**。
 - 版號**用內容 hash 由腳本產生**,別手動 bump——手動的遲早會忘。
+  沒有 build step、非手動不可的 repo,就讓 `pwa-check` 的「版號 bump 檢查」把關:
+  它比對 `origin/HEAD`,只要動到 precache 清單裡的檔而 `sw.js` 沒動就 FAIL
+  (瀏覽器根本不會知道有新版),`sw.js` 動了但快取名沒變則 WARN(cache-first 的資源吃舊的)。
 - `install` 用 `Promise.allSettled(...c.add)` 取代 `addAll`:單一檔失敗不整批擋掉更新。
 - `cache.put` 一律 await + catch,並用**同步呼叫**的 `event.waitUntil` 佔住 SW 壽命
   (await 之後才叫可能拿到 InvalidStateError)。
