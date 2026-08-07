@@ -67,6 +67,22 @@ const mediaFiles = FILES.filter((f) => MEDIA_EXT.has(extname(f)));
 const htmlFiles = FILES.filter((f) => extname(f) === '.html' && !IGNORE.has(rel(f)));
 const SW_PATH = join(ROOT, 'sw.js');
 
+// 把 HTML 裡的 src/href 解到磁碟上的檔。絕對路徑要當心:Vite 這類 build 會輸出
+// base 前綴(/awei-voice/assets/x.js),直接接在站台根目錄後面會找不到 —— 逐段剝掉
+// 前綴再試,否則整站會被誤判成「沒有註冊 SW」(2026-08-07 就是這樣誤報 awei-voice)。
+function resolveLocal(url, fromFile) {
+  const clean = url.split('?')[0].split('#')[0];
+  if (/^(https?:)?\/\//.test(clean)) return null;                 // 跨域的不算本地檔
+  const cands = [];
+  if (clean.startsWith('/')) {
+    const segs = clean.replace(/^\/+/, '').split('/');
+    for (let i = 0; i < segs.length; i++) cands.push(join(ROOT, segs.slice(i).join('/')));
+  } else {
+    cands.push(join(dirname(fromFile), clean), join(ROOT, clean));
+  }
+  return cands.find((p) => existsSync(p) && statSync(p).isFile()) || null;
+}
+
 console.log(`pwa-check — ${ROOT}`);
 // dist/ 是 build 產物:沒重新 build 就測,測到的是上一版,結論會是假的(踩過一次)
 if (/\/(dist|build|out)$/.test(ROOT)) warn('測的是 build 產物', `${ROOT} —— 先跑一次 build,否則測到的是舊版`);
@@ -75,25 +91,37 @@ const swSrc = readFileSync(SW_PATH, 'utf8');
 
 // ---------- 1. 入口頁:任何可能被單獨開啟/分享的頁都要能安裝 ----------
 // 只掛在首頁 = 從分享連結進來的章節頁/詳情頁完全看不到安裝選項。
+let anyRegisters = false;
+const noReg = [];
 for (const f of htmlFiles) {
   const src = readFileSync(f, 'utf8');
   const name = rel(f);
   const hasManifest = /<link[^>]+rel=["']?manifest/i.test(src);
-  // 註冊可能寫在頁內,也可能在它載入的本地 js 裡
-  let registers = /serviceWorker\s*\.\s*register/.test(src);
-  if (!registers) {
-    for (const m of src.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
-      const p = join(dirname(f), m[1].split('?')[0]);
-      if (existsSync(p) && /serviceWorker\s*\.\s*register/.test(readFileSync(p, 'utf8'))) { registers = true; break; }
-    }
+  // 註冊可能寫在頁內,也可能在它載入的本地 js 裡。bundler 打包過的站(vite-plugin-pwa
+  // 走 workbox-window,而且是動態 import 的 chunk)靜態追不到那一行 —— 那種情況只出
+  // WARN,交給執行期的「SW 接管頁面」驗,不要誤判成沒註冊。
+  const bodies = [src];
+  for (const m of src.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) {
+    const p = resolveLocal(m[1], f);
+    if (p) bodies.push(readFileSync(p, 'utf8'));
   }
+  const registers = bodies.some((b) => /serviceWorker\s*\.\s*register/.test(b));
+  const maybe = !registers && bodies.some((b) => /serviceWorker|workbox|registerSW/i.test(b));
+  if (registers || maybe) anyRegisters = true;
   if (!hasManifest) fail(`入口頁掛 manifest:${name}`, '從分享連結單獨開這頁不會出現安裝選項');
-  if (!registers) fail(`入口頁註冊 SW:${name}`, '這頁自己不註冊 SW,單獨開啟時離線不成立');
+  if (maybe) warn(`入口頁註冊 SW:${name}`, '看得到 serviceWorker/workbox 的痕跡但找不到 register 那一行(多半是打包過),執行期檢查會驗');
+  else if (!registers) noReg.push(name);
   if (hasManifest && registers) pass(`入口頁 ${name}`, 'manifest + SW 註冊');
   // Chrome 認的是 mobile-web-app-capable,只放已棄用的 apple- 版不算
   if (!/name=["']?mobile-web-app-capable/i.test(src)) {
     warn(`mobile-web-app-capable:${name}`, 'Android Chrome 選單可能不出現「安裝應用程式」');
   }
+}
+// 沒有任何一頁註冊 SW = 這站根本沒有離線;某幾頁沒註冊只影響「第一次就直接開那頁」的人
+// (SW 一旦被註冊過就控制整個 scope),所以分兩級,不要一律判 FAIL。
+if (noReg.length) {
+  if (!anyRegisters) fail('註冊 SW', `${noReg.join(' ')} 都沒註冊 —— 全站沒有一頁註冊,離線不成立`);
+  else warn('入口頁註冊 SW', `${noReg.join(' ')} 自己不註冊;別的頁註冊過之後這些頁也歸 SW 管,但「第一次就開這頁」的人拿不到離線`);
 }
 
 // ---------- 2. manifest ----------
@@ -112,12 +140,17 @@ else {
     const icons = mf.icons || [];
     const purposes = icons.flatMap((i) => (i.purpose || 'any').split(/\s+/));
     if (!purposes.includes('maskable')) fail('maskable icon', 'Android 會自己套遮罩,沒有 maskable 版會被切');
+    // 一張 sizes:"any" 的 SVG 就能滿足 Chrome 的安裝門檻,不必然要 PNG。但 Android 桌面
+    // 對點陣圖比較穩,所以缺 192/512 時只出 WARN,不判 FAIL。
+    const anySvg = icons.some((i) => /svg/.test(i.type || '') && (i.sizes || '').split(/\s+/).includes('any'));
     for (const need of ['192x192', '512x512']) {
-      if (!icons.some((i) => (i.sizes || '').split(/\s+/).includes(need))) fail(`icon ${need}`, '安裝門檻要求這個尺寸');
+      if (icons.some((i) => (i.sizes || '').split(/\s+/).includes(need))) continue;
+      if (anySvg) warn(`icon ${need}`, '有 sizes:"any" 的 SVG 可以過安裝門檻,但補一張 PNG 在 Android 桌面比較穩');
+      else fail(`icon ${need}`, '安裝門檻要求這個尺寸');
     }
     for (const i of icons) {
-      const p = join(ROOT, i.src.replace(/^\.?\//, ''));
-      if (!existsSync(p)) { fail(`icon 檔存在:${i.src}`, 'manifest 指到不存在的檔'); continue; }
+      const p = resolveLocal(i.src, manifestPath);
+      if (!p) { fail(`icon 檔存在:${i.src}`, 'manifest 指到不存在的檔'); continue; }
       if (extname(p) === '.png') {
         // PNG 的 IHDR 就在檔頭,寬高各 4 bytes big-endian。宣告尺寸與實際不符是安裝失敗的常見隱形原因。
         const b = readFileSync(p);
@@ -235,6 +268,21 @@ function gitBumpCheck() {
 if (!flag('--static-only')) await runtime();
 report();
 
+// build 產物常帶 base 前綴(/<repo>/assets/x.js)。從首頁的絕對路徑資產反推那個前綴:
+// 拿掉第一段之後檔案在站台根目錄找得到,就認定它是 base。
+function detectBasePath() {
+  const idx = join(ROOT, 'index.html');
+  if (!existsSync(idx)) return '';
+  const src = readFileSync(idx, 'utf8');
+  for (const m of src.matchAll(/(?:src|href)=["'](\/[^"']+)["']/g)) {
+    const segs = m[1].replace(/^\/+/, '').split('/');
+    if (segs.length < 2) continue;
+    if (existsSync(join(ROOT, segs.join('/')))) return '';              // 本來就掛在根目錄
+    if (existsSync(join(ROOT, segs.slice(1).join('/')))) return '/' + segs[0];
+  }
+  return '';
+}
+
 // SW 原始碼裡寫死的資源清單(站台根目錄相對路徑),且該檔真的存在
 function precacheList() {
   return [...new Set((swSrc.match(/["'](\.{0,2}\/?[\w\-./]+\.(?:html|css|js|json|webp|png|jpg|jpeg|svg|woff2|mp3|ogg|m4a|wav|mp4|ico))["']/g) || [])
@@ -260,9 +308,17 @@ async function runtime() {
   let hits = [];
   const srv = http.createServer((req, res) => {
     const relp = decodeURIComponent(req.url.split('?')[0]).replace(/^\//, '') || 'index.html';
-    let f = join(tmp, relp);
-    if (existsSync(f) && statSync(f).isDirectory()) f = join(f, 'index.html');
-    if (!existsSync(f)) { res.writeHead(404); return res.end(); }
+    // base path:Vite 這類 build 會輸出 /<repo>/assets/x.js 這種絕對路徑,而這裡是把
+    // 站台根目錄掛在 /。找不到就逐段剝掉前綴再試 —— 否則整包 JS 都 404,SW 根本不會
+    // 被註冊,執行期檢查會把「有 base 的站」全部誤判成沒有 service worker。
+    let f = null;
+    const segs = relp.split('/');
+    for (let i = 0; i < segs.length && !f; i++) {
+      let c = join(tmp, segs.slice(i).join('/'));
+      if (existsSync(c) && statSync(c).isDirectory()) c = join(c, 'index.html');
+      if (existsSync(c) && statSync(c).isFile()) f = c;
+    }
+    if (!f) { res.writeHead(404); return res.end(); }
     const st = statSync(f), etag = `"${st.size}-${st.mtimeMs}"`;
     // 仿 GitHub Pages:每個檔都回 Vary: Accept-Encoding + 支援 Range + ETag。
     // 少了這幾樣,本機測試對「斷網大音檔播不出來」零鑑別力——那個 bug 就是這樣漏上線的。
@@ -282,7 +338,10 @@ async function runtime() {
   });
   const PORT = Number(opt('--port', 8123));
   await new Promise((r) => srv.listen(PORT, '127.0.0.1', r));
-  const BASE = `http://127.0.0.1:${PORT}/`;
+  // 站台的 base path 要照原樣掛。把 /awei-voice/ 的站掛在 / 底下,資產靠剝前綴還是抓得到,
+  // 但 SW 註冊的是 /awei-voice/sw.js、scope 就是 /awei-voice/,而頁面在 / —— 不在 scope 裡,
+  // 永遠不會被接管,整個執行期檢查會誤判成「這站沒有 service worker」。
+  const BASE = `http://127.0.0.1:${PORT}${detectBasePath()}/`;
   const spent = () => { const b = hits.reduce((s, h) => s + h, 0); const n = hits.length; hits = []; return { n, b }; };
   const MB = (b) => (b / 1048576).toFixed(2) + ' MB';
 
@@ -291,10 +350,23 @@ async function runtime() {
   const page = await ctx.newPage();
   try {
     await page.goto(BASE, { waitUntil: 'load' });
-    const controlled = await page.waitForFunction(() => !!navigator.serviceWorker.controller, { timeout: 20000 })
+    // 沒有 skipWaiting 的站(vite-plugin-pwa 的 registerType:"prompt" 就是)第一次載入
+    // 不會被接管 —— 新 SW 裝好後在 waiting,要下一次導覽才控制頁面。所以等不到就重載一次
+    // 再等,只有「重載後仍然沒有」才算真的沒註冊。
+    const waitCtl = (ms) => page.waitForFunction(() => !!navigator.serviceWorker.controller, { timeout: ms })
       .then(() => true).catch(() => false);
-    if (!controlled) { fail('SW 接管頁面', '20 秒內沒有 controller,離線一切免談'); return; }
-    pass('SW 接管頁面');
+    let controlled = await waitCtl(20000);
+    let viaReload = false;
+    if (!controlled) {
+      const registered = await page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => !!r).catch(() => false));
+      if (registered) {
+        await page.reload({ waitUntil: 'load' });
+        controlled = await waitCtl(15000);
+        viaReload = controlled;
+      }
+    }
+    if (!controlled) { fail('SW 接管頁面', '重載一次後仍然沒有 controller,離線一切免談'); return; }
+    pass('SW 接管頁面', viaReload ? '第二次載入才接管(沒有 skipWaiting,prompt 模式的正常行為)' : '');
 
     await page.waitForTimeout(Number(opt('--settle', CFG.settleMs || 15000)));  // 讓背景暖快取跑一段
 

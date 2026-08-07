@@ -48,6 +48,23 @@ for top in "${!SWPATH[@]}"; do
 done
 
 mapfile -t sites < <(printf '%s\n' "${BEST[@]}" | sort)
+# 別人的 repo(留在本機當對照的 clone)不該進自己的合規報告。~/.pwa-sweep-ignore
+# 一行一個路徑片段,比對到就跳過。
+IGNORE_FILE="$HOME/.pwa-sweep-ignore"
+if [ -f "$IGNORE_FILE" ]; then
+  declare -a kept=()
+  for s in "${sites[@]}"; do
+    hit=""
+    while read -r pat; do
+      [ -z "$pat" ] && continue
+      case "$pat" in \#*) continue ;; esac
+      case "$s" in *"$pat"*) hit=1 ;; esac
+    done < "$IGNORE_FILE"
+    if [ -n "$hit" ]; then SKIPPED+=("$s(在 ~/.pwa-sweep-ignore 裡)"); else kept+=("$s"); fi
+  done
+  sites=("${kept[@]}")
+fi
+
 [ ${#sites[@]} -eq 0 ] && { echo "在 $ROOT 底下沒找到任何 sw.js"; exit 0; }
 echo "掃到 ${#sites[@]} 個站(${ROOT})"
 echo
