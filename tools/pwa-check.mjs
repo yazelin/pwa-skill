@@ -143,7 +143,13 @@ else {
   } else if (/startsWith\s*\(|CACHE_PREFIX|\.test\s*\(\s*k/.test(body)) {
     pass('跨站互刪防護', 'activate 的刪除有前綴限定');
   } else {
-    fail('跨站互刪防護', 'activate 無差別刪除:會清掉同 origin 其他站的離線包(功能正常、毫無徵兆)');
+    // 這條只有「跟別站共用 origin」時才是災難。<user>.github.io/<repo>/ 這種專案頁必然共用;
+    // 自架在自己網域、或 Pages 根網域的站,整個 origin 就它一個,刪光也只是刪自己的舊快取。
+    // 掃所有頁,不是只看 index.html —— 站台根目錄不一定有 index.html(public/ 這種擺法)
+    const canon = htmlFiles.flatMap((f) => readFileSync(f, 'utf8').match(/https?:\/\/[^"'\s)]+/g) || [])
+      .find((u) => /\.github\.io\/[^/"']+\//.test(u) || /\.pages\.dev\//.test(u));
+    if (canon) fail('跨站互刪防護', `activate 無差別刪除,而這站在 ${canon.match(/https?:\/\/[^/]+\/[^/]+\//)[0]} —— 會清掉同 origin 其他專案的離線包(功能正常、毫無徵兆)`);
+    else warn('跨站互刪防護', 'activate 無差別刪除;看不出這站跟誰共用 origin,若之後搬到 <user>.github.io/<repo>/ 這種專案頁就會清掉別站的離線包');
   }
 }
 

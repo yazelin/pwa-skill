@@ -68,6 +68,24 @@ woff2 產到 `--out`，對應的 `@font-face` CSS 印到 stdout，自己貼進�
 
 需要 `pyftsubset`（`pip install "fonttools[woff]" brotli`）。
 
+
+## sweep.sh
+
+掃全機的 PWA，逐站跑 `pwa-check`，印成一張表。
+
+```bash
+bash tools/sweep.sh              # 掃 $HOME
+bash tools/sweep.sh ~/projects   # 掃指定目錄
+bash tools/sweep.sh --full       # 連執行期檢查一起跑（慢很多）
+```
+
+**清單靠掃描產生，不靠人列。**2026-08-07 那次「SW 互刪同 origin 別站快取」就是教訓：
+原本以為只有 3 個站，掃過才知道 13 個站在互相清空離線包；後來加了這支 sweep，
+又撈出 4 個手打清單沒有的站。
+
+會處理兩種擺法上的麻煩：`sw.js` 不在 repo 根（`public/`、`static/`、`docs/`）時自動改用它的所在目錄；
+同一個 repo 在磁碟上有多份工作副本時只留最後有 commit 的那份，**跳過的會列出來**——靜靜丟掉會讓人以為掃過了。
+
 ## 安裝
 
 ```bash

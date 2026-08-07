@@ -14,7 +14,10 @@ description: Use when 開新 PWA、修離線/安裝/啟動、或改 service work
 ```bash
 NODE_PATH=$(npm root -g) node ~/pwa-skill/tools/pwa-check.mjs <站台目錄>
 node ~/pwa-skill/tools/pwa-check.mjs <站台目錄> --static-only    # 不需要 playwright
+bash ~/pwa-skill/tools/sweep.sh                                 # 掃全機所有 PWA,印成一張表
 ```
+
+**要判斷「所有站是不是都合規」就跑 sweep,不要自己列清單** —— 手列一定會漏(實測漏了 4 個站)。
 
 它會起一個**仿 GitHub Pages headers** 的本機 server(`Vary: Accept-Encoding` + Range + ETag),
 用 Playwright 裝 SW、模擬一次改版、斷網,然後驗:入口頁都掛得起來、manifest/icon 沒說謊、
