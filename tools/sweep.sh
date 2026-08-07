@@ -36,7 +36,7 @@ done < <(find "$ROOT" -maxdepth 4 -name sw.js -not -path '*/node_modules/*' -not
 # 用 origin URL 分組,只留最後有 commit 的那份,其餘明講跳過 —— 靜靜丟掉會讓人
 # 以為「掃過了」。(SDD/cat 就是 catime 六個月前的舊副本,會報一堆早就修好的問題。)
 declare -A BEST BEST_TS
-declare -a SKIPPED
+declare -a SKIPPED=()
 for top in "${!SWPATH[@]}"; do
   url=$(git -C "$top" remote get-url origin 2>/dev/null || echo "path:$top")
   ts=$(git -C "$top" log -1 --format=%ct 2>/dev/null || echo 0)
@@ -70,7 +70,7 @@ echo "掃到 ${#sites[@]} 個站(${ROOT})"
 echo
 
 fails=0
-declare -a detail
+declare -a detail=()
 for s in "${sites[@]}"; do
   out=$(node "$CHECK" "$s" $MODE 2>&1)
   # sw.js 不在 repo 根(client/public/、static/、漫畫/dist/ 這種擺法)時,
