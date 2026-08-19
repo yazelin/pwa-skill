@@ -65,6 +65,8 @@ const rel = (f) => relative(ROOT, f);
 const MEDIA_EXT = new Set(['.mp3', '.ogg', '.m4a', '.wav', '.mp4', '.webm', '.mov']);
 const mediaFiles = FILES.filter((f) => MEDIA_EXT.has(extname(f)));
 const htmlFiles = FILES.filter((f) => extname(f) === '.html' && !IGNORE.has(rel(f)));
+const cssFiles = FILES.filter((f) => extname(f) === '.css');
+const coverPages = [];
 const SW_PATH = join(ROOT, 'sw.js');
 
 // 把 HTML 裡的 src/href 解到磁碟上的檔。絕對路徑要當心:Vite 這類 build 會輸出
@@ -115,6 +117,21 @@ for (const f of htmlFiles) {
   // Chrome 認的是 mobile-web-app-capable,只放已棄用的 apple- 版不算
   if (!/name=["']?mobile-web-app-capable/i.test(src)) {
     warn(`mobile-web-app-capable:${name}`, 'Android Chrome 選單可能不出現「安裝應用程式」');
+  }
+  if (/viewport-fit\s*=\s*cover/i.test(src)) coverPages.push(name);
+}
+
+// viewport-fit=cover 讓內容鋪到瀏海/動態島底下(沉浸式),但貼頂/貼底的固定元件
+// 必須自己用 env(safe-area-inset-*) 閃避,否則 iOS 全螢幕(加主畫面)會被動態島蓋住、
+// 按鈕點不到。整站(html/css)找不到任何 safe-area-inset-top = 高機率漏處理。
+// 大多數站其實不需要沉浸式:不開 cover(standard)反而零維護、iOS 自動留安全邊。
+if (coverPages.length) {
+  const styleSrc = [...htmlFiles, ...cssFiles].map((f) => { try { return readFileSync(f, 'utf8'); } catch { return ''; } }).join('\n');
+  if (!/safe-area-inset-top/.test(styleSrc)) {
+    warn('viewport-fit=cover 沒配 safe-area-inset-top',
+      `${coverPages.join(' ')} 用了 cover(內容鋪到瀏海下)卻沒有任何 env(safe-area-inset-top) —— iOS 加主畫面全螢幕時頂部固定元件會被動態島蓋住。要嘛給貼頂元件加 env(safe-area-inset-top),要嘛(多數站更省事)拿掉 cover 退回 standard`);
+  } else {
+    pass('viewport-fit=cover 安全區', 'cover 有搭配 env(safe-area-inset-top)');
   }
 }
 // 沒有任何一頁註冊 SW = 這站根本沒有離線;某幾頁沒註冊只影響「第一次就直接開那頁」的人
