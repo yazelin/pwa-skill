@@ -108,7 +108,11 @@ Pages 對每個檔都回 `Vary: Accept-Encoding`。暖快取用 `fetch()` 存進
 ## manifest / 安裝
 
 - `id` 缺了 = app 身份綁在 `start_url` 上,日後改路徑等於變成另一個 app,已安裝的變孤兒。
-- `screenshots` 有的話 Android 會給豐富安裝卡,沒有就只有陽春提示。
+- `screenshots` 有的話會給**豐富安裝卡**(Play 商店式預覽),沒有就只有陽春提示列。**但要分兩個版位**:
+  - `form_factor: "narrow"` = **手機**直式;`form_factor: "wide"`(或不標,規範預設當 wide)= **桌機**橫式。
+  - **缺哪一邊,那個平台的安裝就退回陽春**。手機桌機各配至少一張才算完整——只放 narrow 桌機沒卡、只放 wide 手機沒卡(這兩種各自踩過)。
+  - 尺寸給實際像素(手機約 540×1110、桌機約 1280×800),`type` 對(webp 也行),截圖只在安裝卡閃現一次、不進 app、不必高品質,轉 webp 省八成。
+  - screenshots 不烤進 app、也不必進 SW precache(瀏覽器在安裝提示時自己抓);烤進 app 的是 **icon**。
 - **「Android Chrome 選單根本不出現安裝選項」→ 先查 `<meta name="mobile-web-app-capable">`**。
   Chrome 認的是這個,只放已棄用的 `apple-mobile-web-app-capable` 不算。
 - **橫式全螢幕**:`display: standalone` 會留一條系統列。加 `display_override: ["fullscreen","standalone"]`。
@@ -119,6 +123,16 @@ Pages 對每個檔都回 `Vary: Accept-Encoding`。暖快取用 `fetch()` 存進
   ——他就是想裝才點的,取消常常只是誤觸,結果按鈕消失兩週像壞掉。只在當次瀏覽收起。
 - 已安裝之後 Chrome **不會再送 `beforeinstallprompt`**,清 localStorage 也叫不回來(要先移除應用程式)。
 - `[hidden]` 會被 `display:flex` 蓋過(橫幅關不掉的常見真因)。
+
+## SEO / OG:PWA 與一般 GitHub Pages 都要,但有分層
+
+`pwa-check` 現在會一起查(靜態,只掃首頁)。哪些是「只要是對外網頁就該有」、哪些是「PWA 特有」,分清楚:
+
+- **不分 PWA、任何對外站都要**:`<meta name="description">`(搜尋摘要,缺了 Google 亂抓)、OG 三件 `og:title/description/image`(FB/Line/Telegram 分享卡)、`twitter:card`(Twitter 大圖)、`canonical`(避免多網址稀釋收錄)、`robots.txt`+`sitemap.xml`(搜尋收錄入口)。
+  - **OG 圖是 1200×630 橫幅**,不是 app 圖示。拿方形 icon 當 og:image,分享時會被裁成小方塊或裂圖。要標 `og:image:width/height`(有些平台首次抓圖沒尺寸會裂)。
+  - OG 圖進 SW precache(可選)讓爬蟲取圖穩定;`og:image` 用絕對網址。
+- **PWA 特有(一般靜態站沒有)**:manifest、SW、screenshots、maskable icon、`mobile-web-app-capable`、離線快取——這些是「能不能裝、能不能離線」的事,純展示站不需要。
+- 共通雷:**OG 圖指到不存在的檔**——路徑錯了分享就沒圖,肉眼在自己站上看不出來(那張圖根本不會在頁面顯示),只有 pwa-check 或真的去分享才會現形。
 
 ## 手機版面
 

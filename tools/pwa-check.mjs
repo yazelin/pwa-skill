@@ -136,7 +136,24 @@ else {
     }
     // id 缺了:日後改 start_url 等於換一個 app,已安裝的變孤兒
     if (!mf.id) warn('manifest.id', '沒有 id,app 身份綁在 start_url 上,改路徑就會變成另一個 app');
-    if (!mf.screenshots) warn('manifest.screenshots', 'Android 拿不到豐富安裝卡(只有陽春提示)');
+    // screenshots 分手機(narrow)/桌機(wide):缺哪邊,那個平台的安裝就退回陽春提示。
+    // 沒標 form_factor 的預設當 wide(規範預設),等於只覆蓋桌機。
+    const shots = mf.screenshots || [];
+    if (!shots.length) {
+      warn('manifest.screenshots', '完全沒有截圖 —— 手機與桌機安裝都只有陽春提示,不會出現豐富安裝卡');
+    } else {
+      const ff = (sc) => sc.form_factor === 'narrow' ? 'narrow' : 'wide';
+      const hasNarrow = shots.some((sc) => ff(sc) === 'narrow');
+      const hasWide = shots.some((sc) => ff(sc) === 'wide');
+      if (!hasNarrow) warn('screenshots 缺 narrow', '沒有手機直式截圖(form_factor:"narrow")—— 手機 Chrome 安裝退回陽春提示');
+      if (!hasWide) warn('screenshots 缺 wide', '沒有桌機橫式截圖(form_factor:"wide" 或不標)—— 桌機 Chrome 安裝退回陽春提示');
+      // 截圖檔存在 + 宣告尺寸對得上
+      for (const sc of shots) {
+        const sp = resolveLocal(sc.src, manifestPath);
+        if (!sp) { warn(`screenshot 檔存在:${sc.src}`, 'manifest 指到不存在的檔'); continue; }
+      }
+      if (hasNarrow && hasWide) pass('manifest screenshots', `narrow + wide 都有(${shots.length} 張)`);
+    }
     const icons = mf.icons || [];
     const purposes = icons.flatMap((i) => (i.purpose || 'any').split(/\s+/));
     if (!purposes.includes('maskable')) fail('maskable icon', 'Android 會自己套遮罩,沒有 maskable 版會被切');
@@ -162,6 +179,37 @@ else {
       }
     }
     if (!results.some((r) => r.level === 'FAIL' && r.name.startsWith('icon'))) pass('manifest icons', `${icons.length} 個、含 maskable`);
+  }
+}
+
+// ---------- 2b. SEO / OG:社群分享與搜尋收錄的基本款(只查首頁,靜態) ----------
+// 這些不影響離線/安裝,但漏了社群分享會醜、搜尋收錄差。只在首頁(index.html / ./)查一次。
+{
+  const home = htmlFiles.find((f) => /(^|\/)index\.html$/.test(rel(f))) || htmlFiles[0];
+  if (home) {
+    const src = readFileSync(home, 'utf8');
+    const has = (re) => re.test(src);
+    const tag = (prop) => has(new RegExp(`<meta[^>]+(name|property)=["']?${prop}["']?[^>]*content=`, 'i'));
+    // description:搜尋結果的摘要,缺了 Google 自己亂抓
+    if (!tag('description')) warn('SEO description', '首頁沒有 <meta name="description"> —— 搜尋結果摘要由 Google 亂抓');
+    // OG:FB/Line/Telegram 分享卡
+    const ogMiss = ['og:title', 'og:description', 'og:image'].filter((k) => !tag(k));
+    if (ogMiss.length) warn('OG 分享卡', `缺 ${ogMiss.join(' / ')} —— FB/Line 分享不會有預覽卡`);
+    else {
+      // og:image 有的話,尺寸最好標出來(1200x630 是社群標準版位)
+      if (!tag('og:image:width')) warn('og:image 尺寸', '有 og:image 但沒標 width/height —— 部分平台首次抓圖會裂或不顯示');
+      if (!tag('twitter:card')) warn('Twitter Card', '有 OG 但沒有 twitter:card —— Twitter/X 分享不會出大圖(補 summary_large_image)');
+      if (!ogMiss.length && tag('twitter:card')) pass('OG / 分享卡', 'og:title/description/image + twitter:card 齊全');
+    }
+    // canonical:避免重複網址稀釋收錄
+    if (!has(/<link[^>]+rel=["']?canonical/i)) warn('canonical', '首頁沒有 <link rel="canonical"> —— 多網址會稀釋搜尋收錄');
+  }
+  // robots.txt / sitemap.xml(搜尋引擎的基本入口)
+  if (!existsSync(join(ROOT, 'robots.txt'))) warn('robots.txt', '沒有 robots.txt(可指向 sitemap)');
+  if (!existsSync(join(ROOT, 'sitemap.xml'))) warn('sitemap.xml', '沒有 sitemap.xml —— 搜尋引擎收錄的基本入口');
+  if (existsSync(join(ROOT, 'robots.txt')) && existsSync(join(ROOT, 'sitemap.xml')) &&
+      htmlFiles.some((f) => /description/i.test(readFileSync(f, 'utf8')))) {
+    pass('SEO 基本款', 'description + robots.txt + sitemap.xml 都在');
   }
 }
 
